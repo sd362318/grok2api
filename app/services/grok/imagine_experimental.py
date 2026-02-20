@@ -9,6 +9,7 @@ This module provides:
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
@@ -87,6 +88,7 @@ class ImagineExperimentalService:
         prompt: str,
         request_id: str,
         aspect_ratio: str = "2:3",
+        enable_nsfw: bool = True,
     ) -> Dict[str, Any]:
         return {
             "type": "conversation.item.create",
@@ -97,11 +99,11 @@ class ImagineExperimentalService:
                     {
                         "requestId": request_id,
                         "text": prompt,
-                        "type": "input_scroll",
+                        "type": "input_text",
                         "properties": {
                             "section_count": 0,
                             "is_kids_mode": False,
-                            "enable_nsfw": True,
+                            "enable_nsfw": enable_nsfw,
                             "skip_upsampler": False,
                             "is_initial": False,
                             "aspect_ratio": aspect_ratio,
@@ -154,7 +156,10 @@ class ImagineExperimentalService:
         progress_cb: Optional[ProgressCallback] = None,
         completed_cb: Optional[CompletedCallback] = None,
         timeout: Optional[int] = None,
+        enable_nsfw: Optional[bool] = None,
     ) -> List[str]:
+        if enable_nsfw is None:
+            enable_nsfw = bool(get_config("image.nsfw", True))
         request_id = str(uuid.uuid4())
         target_count = max(1, int(n or 1))
         effective_timeout = max(10, int(timeout or self.timeout))
@@ -162,6 +167,7 @@ class ImagineExperimentalService:
             prompt=prompt,
             request_id=request_id,
             aspect_ratio=aspect_ratio,
+            enable_nsfw=enable_nsfw,
         )
 
         session = AsyncSession(impersonate=BROWSER)
@@ -303,12 +309,21 @@ class ImagineExperimentalService:
         return out
 
     @staticmethod
-    def _build_edit_payload(prompt: str, image_urls: List[str], model_name: str) -> Dict[str, Any]:
+    def _build_edit_payload(
+        prompt: str,
+        image_urls: List[str],
+        model_name: str,
+        parent_post_id: str = "",
+    ) -> Dict[str, Any]:
+        image_edit_config: Dict[str, Any] = {
+            "imageReferences": image_urls,
+        }
+        if parent_post_id:
+            image_edit_config["parentPostId"] = parent_post_id
+
         model_map = {
             "imageEditModel": "imagine",
-            "imageEditModelConfig": {
-                "imageReferences": image_urls,
-            },
+            "imageEditModelConfig": image_edit_config,
         }
         payload: Dict[str, Any] = {
             "temporary": True,
@@ -344,6 +359,35 @@ class ImagineExperimentalService:
             payload["modelMode"] = "MODEL_MODE_FAST"
         return payload
 
+    async def _get_parent_post_id(self, token: str, image_urls: List[str]) -> str:
+        """Create parent post ID for image edit, with URL fallback."""
+        parent_post_id = None
+        try:
+            from app.services.grok.media import VideoService
+            media_service = VideoService()
+            parent_post_id = await media_service.create_image_post(token, image_urls[0])
+            logger.debug(f"Image edit parent post ID: {parent_post_id}")
+        except Exception as e:
+            logger.warning(f"Create image post for edit failed: {e}")
+
+        if parent_post_id:
+            return parent_post_id
+
+        # Fallback: extract UUID from asset URLs
+        for url in image_urls:
+            match = re.search(r"/generated/([a-f0-9-]+)/", url)
+            if match:
+                parent_post_id = match.group(1)
+                logger.debug(f"Image edit parent post ID (from URL): {parent_post_id}")
+                break
+            match = re.search(r"/users/[^/]+/([a-f0-9-]+)/content", url)
+            if match:
+                parent_post_id = match.group(1)
+                logger.debug(f"Image edit parent post ID (from URL): {parent_post_id}")
+                break
+
+        return parent_post_id or ""
+
     async def chat_edit(
         self,
         token: str,
@@ -354,13 +398,16 @@ class ImagineExperimentalService:
         if not image_urls:
             raise UpstreamException("Experimental image edit requires at least one uploaded image")
 
+        # Create parent post ID (matches origin's behavior)
+        parent_post_id = await self._get_parent_post_id(token, image_urls)
+
         headers = self._headers(token, referer="https://grok.com/imagine")
         proxies = self._proxies()
         timeout = self.timeout
 
         payloads = [
-            self._build_edit_payload(prompt, image_urls, "imagine-image-edit"),
-            self._build_edit_payload(prompt, image_urls, "grok-3"),
+            self._build_edit_payload(prompt, image_urls, "imagine-image-edit", parent_post_id),
+            self._build_edit_payload(prompt, image_urls, "grok-3", parent_post_id),
         ]
 
         last_error: Optional[Exception] = None

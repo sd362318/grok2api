@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional, Dict, Any
 
 from curl_cffi import requests
+from curl_cffi.requests import AsyncSession
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -17,7 +18,7 @@ class NsfwSettingsService:
     def __init__(self, cf_clearance: str = ""):
         self.cf_clearance = (cf_clearance or "").strip()
 
-    def enable_nsfw(
+    def _build_request_params(
         self,
         sso: str,
         sso_rw: str,
@@ -25,34 +26,8 @@ class NsfwSettingsService:
         user_agent: Optional[str] = None,
         cf_clearance: Optional[str] = None,
         timeout: int = 15,
-    ) -> Dict[str, Any]:
-        """
-        启用 always_show_nsfw_content。
-        返回: {
-            ok: bool,
-            hex_reply: str,
-            status_code: int | None,
-            grpc_status: str | None,
-            error: str | None
-        }
-        """
-        if not sso:
-            return {
-                "ok": False,
-                "hex_reply": "",
-                "status_code": None,
-                "grpc_status": None,
-                "error": "缺少 sso",
-            }
-        if not sso_rw:
-            return {
-                "ok": False,
-                "hex_reply": "",
-                "status_code": None,
-                "grpc_status": None,
-                "error": "缺少 sso-rw",
-            }
-
+    ) -> tuple[str, dict, dict, bytes, str, int]:
+        """Build common request parameters for NSFW enablement."""
         url = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
 
         cookies = {
@@ -80,39 +55,85 @@ class NsfwSettingsService:
             b"always_show_nsfw_content"
         )
 
+        imp = impersonate or "chrome120"
+        return url, headers, cookies, data, imp, timeout
+
+    @staticmethod
+    def _parse_response(response) -> Dict[str, Any]:
+        """Parse a gRPC-Web response into a standard result dict."""
+        hex_reply = response.content.hex()
+        grpc_status = response.headers.get("grpc-status")
+
+        error = None
+        ok = response.status_code == 200 and (grpc_status in (None, "0"))
+        if response.status_code == 403:
+            error = "403 Forbidden"
+        elif response.status_code != 200:
+            error = f"HTTP {response.status_code}"
+        elif grpc_status not in (None, "0"):
+            error = f"gRPC {grpc_status}"
+
+        return {
+            "ok": ok,
+            "hex_reply": hex_reply,
+            "status_code": response.status_code,
+            "grpc_status": grpc_status,
+            "error": error,
+        }
+
+    def enable_nsfw(
+        self,
+        sso: str,
+        sso_rw: str,
+        impersonate: str,
+        user_agent: Optional[str] = None,
+        cf_clearance: Optional[str] = None,
+        timeout: int = 15,
+    ) -> Dict[str, Any]:
+        """
+        启用 always_show_nsfw_content (synchronous).
+        返回: {ok, hex_reply, status_code, grpc_status, error}
+        """
+        if not sso:
+            return {"ok": False, "hex_reply": "", "status_code": None, "grpc_status": None, "error": "缺少 sso"}
+        if not sso_rw:
+            return {"ok": False, "hex_reply": "", "status_code": None, "grpc_status": None, "error": "缺少 sso-rw"}
+
+        url, headers, cookies, data, imp, timeout = self._build_request_params(
+            sso, sso_rw, impersonate, user_agent, cf_clearance, timeout,
+        )
         try:
-            response = requests.post(
-                url,
-                headers=headers,
-                cookies=cookies,
-                data=data,
-                impersonate=impersonate or "chrome120",
-                timeout=timeout,
-            )
-            hex_reply = response.content.hex()
-            grpc_status = response.headers.get("grpc-status")
-
-            error = None
-            ok = response.status_code == 200 and (grpc_status in (None, "0"))
-            if response.status_code == 403:
-                error = "403 Forbidden"
-            elif response.status_code != 200:
-                error = f"HTTP {response.status_code}"
-            elif grpc_status not in (None, "0"):
-                error = f"gRPC {grpc_status}"
-
-            return {
-                "ok": ok,
-                "hex_reply": hex_reply,
-                "status_code": response.status_code,
-                "grpc_status": grpc_status,
-                "error": error,
-            }
+            response = requests.post(url, headers=headers, cookies=cookies, data=data, impersonate=imp, timeout=timeout)
+            return self._parse_response(response)
         except Exception as e:
-            return {
-                "ok": False,
-                "hex_reply": "",
-                "status_code": None,
-                "grpc_status": None,
-                "error": str(e),
-            }
+            return {"ok": False, "hex_reply": "", "status_code": None, "grpc_status": None, "error": str(e)}
+
+    async def enable_nsfw_async(
+        self,
+        session: AsyncSession,
+        sso: str,
+        sso_rw: str,
+        impersonate: str,
+        user_agent: Optional[str] = None,
+        cf_clearance: Optional[str] = None,
+        timeout: int = 15,
+    ) -> Dict[str, Any]:
+        """
+        启用 always_show_nsfw_content (async, reuses session).
+        返回: {ok, hex_reply, status_code, grpc_status, error}
+        """
+        if not sso:
+            return {"ok": False, "hex_reply": "", "status_code": None, "grpc_status": None, "error": "缺少 sso"}
+        if not sso_rw:
+            return {"ok": False, "hex_reply": "", "status_code": None, "grpc_status": None, "error": "缺少 sso-rw"}
+
+        url, headers, cookies, data, imp, timeout = self._build_request_params(
+            sso, sso_rw, impersonate, user_agent, cf_clearance, timeout,
+        )
+        try:
+            response = await session.post(
+                url, headers=headers, cookies=cookies, data=data, impersonate=imp, timeout=timeout,
+            )
+            return self._parse_response(response)
+        except Exception as e:
+            return {"ok": False, "hex_reply": "", "status_code": None, "grpc_status": None, "error": str(e)}

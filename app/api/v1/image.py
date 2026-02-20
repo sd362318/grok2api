@@ -142,7 +142,7 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
         )
 
     model_info = ModelService.get(model_id)
-    if not model_info or not model_info.is_image:
+    if not model_info or not model_info.is_image_edit:
         raise ValidationException(
             message=f"The model `{model_id}` is not supported for image edits.",
             param="model",

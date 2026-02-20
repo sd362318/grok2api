@@ -5,6 +5,7 @@ import random
 from typing import Any, Dict, Optional
 
 from curl_cffi import requests
+from curl_cffi.requests import AsyncSession
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -29,7 +30,7 @@ class BirthDateService:
     def __init__(self, cf_clearance: str = ""):
         self.cf_clearance = (cf_clearance or "").strip()
 
-    def set_birth_date(
+    def _build_request_params(
         self,
         sso: str,
         sso_rw: str,
@@ -37,22 +38,8 @@ class BirthDateService:
         user_agent: Optional[str] = None,
         cf_clearance: Optional[str] = None,
         timeout: int = 15,
-    ) -> Dict[str, Any]:
-        if not sso:
-            return {
-                "ok": False,
-                "status_code": None,
-                "response_text": "",
-                "error": "missing sso",
-            }
-        if not sso_rw:
-            return {
-                "ok": False,
-                "status_code": None,
-                "response_text": "",
-                "error": "missing sso-rw",
-            }
-
+    ) -> tuple[str, dict, dict, dict, str, int]:
+        """Build common request parameters for birth date setting."""
         url = "https://grok.com/rest/auth/set-birth-date"
         cookies = {
             "sso": sso,
@@ -69,29 +56,69 @@ class BirthDateService:
             "user-agent": user_agent or DEFAULT_USER_AGENT,
         }
         payload = {"birthDate": generate_random_birthdate()}
+        imp = impersonate or "chrome120"
+        return url, headers, cookies, payload, imp, timeout
 
+    @staticmethod
+    def _parse_response(response) -> Dict[str, Any]:
+        """Parse HTTP response into a standard result dict."""
+        status_code = response.status_code
+        response_text = response.text or ""
+        ok = status_code == 200
+        return {
+            "ok": ok,
+            "status_code": status_code,
+            "response_text": response_text,
+            "error": None if ok else f"HTTP {status_code}",
+        }
+
+    def set_birth_date(
+        self,
+        sso: str,
+        sso_rw: str,
+        impersonate: str,
+        user_agent: Optional[str] = None,
+        cf_clearance: Optional[str] = None,
+        timeout: int = 15,
+    ) -> Dict[str, Any]:
+        """Set birth date (synchronous)."""
+        if not sso:
+            return {"ok": False, "status_code": None, "response_text": "", "error": "missing sso"}
+        if not sso_rw:
+            return {"ok": False, "status_code": None, "response_text": "", "error": "missing sso-rw"}
+
+        url, headers, cookies, payload, imp, timeout = self._build_request_params(
+            sso, sso_rw, impersonate, user_agent, cf_clearance, timeout,
+        )
         try:
-            response = requests.post(
-                url,
-                headers=headers,
-                cookies=cookies,
-                json=payload,
-                impersonate=impersonate or "chrome120",
-                timeout=timeout,
-            )
-            status_code = response.status_code
-            response_text = response.text or ""
-            ok = status_code == 200
-            return {
-                "ok": ok,
-                "status_code": status_code,
-                "response_text": response_text,
-                "error": None if ok else f"HTTP {status_code}",
-            }
+            response = requests.post(url, headers=headers, cookies=cookies, json=payload, impersonate=imp, timeout=timeout)
+            return self._parse_response(response)
         except Exception as e:
-            return {
-                "ok": False,
-                "status_code": None,
-                "response_text": "",
-                "error": str(e),
-            }
+            return {"ok": False, "status_code": None, "response_text": "", "error": str(e)}
+
+    async def set_birth_date_async(
+        self,
+        session: AsyncSession,
+        sso: str,
+        sso_rw: str,
+        impersonate: str,
+        user_agent: Optional[str] = None,
+        cf_clearance: Optional[str] = None,
+        timeout: int = 15,
+    ) -> Dict[str, Any]:
+        """Set birth date (async, reuses session)."""
+        if not sso:
+            return {"ok": False, "status_code": None, "response_text": "", "error": "missing sso"}
+        if not sso_rw:
+            return {"ok": False, "status_code": None, "response_text": "", "error": "missing sso-rw"}
+
+        url, headers, cookies, payload, imp, timeout = self._build_request_params(
+            sso, sso_rw, impersonate, user_agent, cf_clearance, timeout,
+        )
+        try:
+            response = await session.post(
+                url, headers=headers, cookies=cookies, json=payload, impersonate=imp, timeout=timeout,
+            )
+            return self._parse_response(response)
+        except Exception as e:
+            return {"ok": False, "status_code": None, "response_text": "", "error": str(e)}

@@ -40,6 +40,10 @@ def test_refresh_tokens_runs_tos_birth_nsfw_in_order(monkeypatch):
             calls.append(f"tos:{sso}:{sso_rw}:{impersonate}")
             return {"ok": True}
 
+        async def accept_tos_version_async(self, session, sso, sso_rw, impersonate):
+            calls.append(f"tos:{sso}:{sso_rw}:{impersonate}")
+            return {"ok": True}
+
     class _BirthDateService:
         def __init__(self, cf_clearance=""):
             self.cf_clearance = cf_clearance
@@ -48,11 +52,19 @@ def test_refresh_tokens_runs_tos_birth_nsfw_in_order(monkeypatch):
             calls.append(f"birth:{sso}:{sso_rw}:{impersonate}")
             return {"ok": True}
 
+        async def set_birth_date_async(self, session, sso, sso_rw, impersonate):
+            calls.append(f"birth:{sso}:{sso_rw}:{impersonate}")
+            return {"ok": True}
+
     class _NsfwSettingsService:
         def __init__(self, cf_clearance=""):
             self.cf_clearance = cf_clearance
 
         def enable_nsfw(self, sso, sso_rw, impersonate):
+            calls.append(f"nsfw:{sso}:{sso_rw}:{impersonate}")
+            return {"ok": True}
+
+        async def enable_nsfw_async(self, session, sso, sso_rw, impersonate):
             calls.append(f"nsfw:{sso}:{sso_rw}:{impersonate}")
             return {"ok": True}
 
@@ -87,6 +99,10 @@ def test_refresh_tokens_retries_then_invalidates(monkeypatch):
             attempt["count"] += 1
             return {"ok": False, "error": "forbidden"}
 
+        async def accept_tos_version_async(self, session, sso, sso_rw, impersonate):
+            attempt["count"] += 1
+            return {"ok": False, "error": "forbidden"}
+
     class _BirthDateService:
         def __init__(self, cf_clearance=""):
             self.cf_clearance = cf_clearance
@@ -94,11 +110,17 @@ def test_refresh_tokens_retries_then_invalidates(monkeypatch):
         def set_birth_date(self, sso, sso_rw, impersonate):
             raise AssertionError("birth step should not run when TOS fails")
 
+        async def set_birth_date_async(self, session, sso, sso_rw, impersonate):
+            raise AssertionError("birth step should not run when TOS fails")
+
     class _NsfwSettingsService:
         def __init__(self, cf_clearance=""):
             self.cf_clearance = cf_clearance
 
         def enable_nsfw(self, sso, sso_rw, impersonate):
+            raise AssertionError("nsfw step should not run when TOS fails")
+
+        async def enable_nsfw_async(self, session, sso, sso_rw, impersonate):
             raise AssertionError("nsfw step should not run when TOS fails")
 
     monkeypatch.setattr(refresh_module, "UserAgreementService", _UserAgreementService)

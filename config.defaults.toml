@@ -35,6 +35,11 @@ enable_auto_clean = true
 limit_mb = 1024
 keep_base64_cache = true
 
+# ==================== 图像配置 ====================
+[image]
+# 是否启用 NSFW
+nsfw = true
+
 [performance]
 assets_max_concurrent = 25
 media_max_concurrent = 50

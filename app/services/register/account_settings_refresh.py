@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import Iterable, Any
+
+from curl_cffi.requests import AsyncSession
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -16,6 +19,11 @@ from app.services.token.manager import TokenManager, get_token_manager
 DEFAULT_NSFW_REFRESH_CONCURRENCY = 10
 DEFAULT_NSFW_REFRESH_RETRIES = 3
 DEFAULT_IMPERSONATE = "chrome120"
+
+# Retry settings for 429/5xx within a single step
+_STEP_MAX_RETRIES = 2
+_STEP_RETRY_BACKOFF_BASE = 1.0
+_STEP_RETRY_BACKOFF_MAX = 5.0
 
 
 def _extract_cookie_value(cookie_str: str, name: str) -> str | None:
@@ -89,12 +97,51 @@ def _format_step_error(result: dict, fallback: str = "unknown error") -> str:
     return fallback
 
 
+def _is_retryable_status(result: dict) -> bool:
+    """Check if a failed step result should be retried at the HTTP level."""
+    status = result.get("status_code")
+    if status in (429, 500, 502, 503, 504):
+        return True
+    grpc = result.get("grpc_status")
+    if grpc is not None and grpc not in (None, "0"):
+        return True
+    return False
+
+
+async def _run_step_with_retry(
+    coro_factory,
+    step_name: str,
+    max_retries: int = _STEP_MAX_RETRIES,
+) -> dict:
+    """Run a single step (TOS/birth/NSFW) with built-in retry for transient failures."""
+    last_result = None
+    for attempt in range(max_retries + 1):
+        result = await coro_factory()
+        if result.get("ok"):
+            return result
+        last_result = result
+        if attempt < max_retries and _is_retryable_status(result):
+            delay = min(
+                _STEP_RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5),
+                _STEP_RETRY_BACKOFF_MAX,
+            )
+            logger.debug(
+                f"Step {step_name} retryable failure (status={result.get('status_code')}), "
+                f"retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+            continue
+        break
+    return last_result
+
+
 class AccountSettingsRefreshService:
     def __init__(self, token_manager: TokenManager, cf_clearance: str = "") -> None:
         self.token_manager = token_manager
         self.cf_clearance = (cf_clearance or "").strip()
 
     def _apply_once(self, raw_token: str) -> tuple[bool, str, str]:
+        """Synchronous version (legacy compatibility)."""
         sso, sso_rw = parse_sso_pair(raw_token)
         if not sso:
             return False, "parse", "missing sso"
@@ -106,28 +153,67 @@ class AccountSettingsRefreshService:
         nsfw_service = NsfwSettingsService(cf_clearance=self.cf_clearance)
 
         tos_result = user_service.accept_tos_version(
-            sso=sso,
-            sso_rw=sso_rw,
-            impersonate=DEFAULT_IMPERSONATE,
+            sso=sso, sso_rw=sso_rw, impersonate=DEFAULT_IMPERSONATE,
         )
         if not tos_result.get("ok"):
             return False, "tos", _format_step_error(tos_result, "accept_tos failed")
 
         birth_result = birth_service.set_birth_date(
-            sso=sso,
-            sso_rw=sso_rw,
-            impersonate=DEFAULT_IMPERSONATE,
+            sso=sso, sso_rw=sso_rw, impersonate=DEFAULT_IMPERSONATE,
         )
         if not birth_result.get("ok"):
             return False, "birth", _format_step_error(birth_result, "set_birth_date failed")
 
         nsfw_result = nsfw_service.enable_nsfw(
-            sso=sso,
-            sso_rw=sso_rw,
-            impersonate=DEFAULT_IMPERSONATE,
+            sso=sso, sso_rw=sso_rw, impersonate=DEFAULT_IMPERSONATE,
         )
         if not nsfw_result.get("ok"):
             return False, "nsfw", _format_step_error(nsfw_result, "enable_nsfw failed")
+
+        return True, "", ""
+
+    async def _apply_once_async(self, raw_token: str) -> tuple[bool, str, str]:
+        """Async version: uses a shared AsyncSession for all 3 steps per token."""
+        sso, sso_rw = parse_sso_pair(raw_token)
+        if not sso:
+            return False, "parse", "missing sso"
+        if not sso_rw:
+            sso_rw = sso
+
+        user_service = UserAgreementService(cf_clearance=self.cf_clearance)
+        birth_service = BirthDateService(cf_clearance=self.cf_clearance)
+        nsfw_service = NsfwSettingsService(cf_clearance=self.cf_clearance)
+
+        async with AsyncSession() as session:
+            # Step 1: Accept TOS
+            tos_result = await _run_step_with_retry(
+                lambda: user_service.accept_tos_version_async(
+                    session, sso=sso, sso_rw=sso_rw, impersonate=DEFAULT_IMPERSONATE,
+                ),
+                step_name="tos",
+            )
+            if not tos_result.get("ok"):
+                return False, "tos", _format_step_error(tos_result, "accept_tos failed")
+
+            # Step 2: Set birth date
+            birth_result = await _run_step_with_retry(
+                lambda: birth_service.set_birth_date_async(
+                    session, sso=sso, sso_rw=sso_rw, impersonate=DEFAULT_IMPERSONATE,
+                ),
+                step_name="birth",
+            )
+            if not birth_result.get("ok"):
+                return False, "birth", _format_step_error(birth_result, "set_birth_date failed")
+
+            # Step 3: Enable NSFW
+            nsfw_result = await _run_step_with_retry(
+                lambda: nsfw_service.enable_nsfw_async(
+                    session, sso=sso, sso_rw=sso_rw, impersonate=DEFAULT_IMPERSONATE,
+                ),
+                step_name="nsfw",
+            )
+            if not nsfw_result.get("ok"):
+                return False, "nsfw", _format_step_error(nsfw_result, "enable_nsfw failed")
 
         return True, "", ""
 
@@ -165,14 +251,13 @@ class AccountSettingsRefreshService:
             async with semaphore:
                 for attempt in range(1, max_attempts + 1):
                     try:
-                        ok, step, error = await asyncio.to_thread(self._apply_once, token)
+                        ok, step, error = await self._apply_once_async(token)
                     except Exception as exc:
                         ok, step, error = False, "exception", str(exc)
 
                     if ok:
                         updated = await self.token_manager.mark_token_account_settings_success(
-                            token,
-                            save=False,
+                            token, save=False,
                         )
                         if not updated:
                             logger.warning(
@@ -193,9 +278,7 @@ class AccountSettingsRefreshService:
                     f"attempts={max_attempts} error={last_error}"
                 )
                 invalidated = await self.token_manager.set_token_invalid(
-                    token,
-                    reason=reason,
-                    save=False,
+                    token, reason=reason, save=False,
                 )
                 return {
                     "token": token,

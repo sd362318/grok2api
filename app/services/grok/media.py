@@ -171,7 +171,7 @@ class VideoService:
         post_id: str,
         aspect_ratio: str = "3:2",
         video_length: int = 6,
-        resolution: str = "SD",
+        resolution: str = "480p",
         preset: str = "normal"
     ) -> dict:
         """构建视频生成载荷"""
@@ -184,6 +184,12 @@ class VideoService:
             mode_flag = "--mode=extremely-spicy-or-crazy"
             
         full_prompt = f"{prompt} {mode_flag}"
+        
+        # Normalize resolution: accept both old and new formats
+        resolution_name = resolution
+        resolution_map = {"SD": "480p", "HD": "720p"}
+        if resolution in resolution_map:
+            resolution_name = resolution_map[resolution]
         
         return {
             "temporary": True,
@@ -199,7 +205,7 @@ class VideoService:
                             "parentPostId": post_id,
                             "aspectRatio": aspect_ratio,
                             "videoLength": video_length,
-                            "videoResolution": resolution
+                            "resolutionName": resolution_name
                         }
                     }
                 }

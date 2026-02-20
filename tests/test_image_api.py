@@ -45,7 +45,7 @@ def test_edit_model_mapping_exists():
     model = ModelService.get("grok-imagine-1.0-edit")
     assert model is not None
     assert model.grok_model == "imagine-image-edit"
-    assert model.is_image is True
+    assert model.is_image_edit is True
 
 
 def test_validate_edit_request_rejects_legacy_model():

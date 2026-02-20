@@ -46,7 +46,7 @@ async def enforce_daily_quota(
     elif model_info and model_info.is_video:
         incs = {"video_used": 1}
         bucket_name = "video"
-    elif model_info and model_info.is_image:
+    elif model_info and (model_info.is_image or model_info.is_image_edit):
         # grok image model via chat endpoint: upstream usually returns up to 2 images
         incs = {"image_used": max(1, int(image_count or 2))}
         bucket_name = "image"
