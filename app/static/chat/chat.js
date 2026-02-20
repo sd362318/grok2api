@@ -5,6 +5,7 @@ let models = [];
 let chatMessages = [];
 let chatAttachments = []; // { file, previewUrl }
 let videoAttachments = [];
+let imageEditAttachments = [];
 let imageGenerationMethod = 'legacy';
 let imageGenerationExperimental = false;
 let imageContinuousSockets = [];
@@ -246,10 +247,25 @@ function bindFileInputs() {
     addAttachments('video', files);
     q('video-file').value = '';
   });
+
+  const imageEditFileEl = q('image-edit-file');
+  if (imageEditFileEl) {
+    imageEditFileEl.addEventListener('change', () => {
+      const files = Array.from(imageEditFileEl.files || []);
+      if (!files.length) return;
+      addAttachments('image-edit', files);
+      imageEditFileEl.value = '';
+    });
+  }
+
+  const modelSel = q('model-select');
+  if (modelSel) {
+    modelSel.addEventListener('change', updateImageEditUploadVisibility);
+  }
 }
 
 function addAttachments(kind, files) {
-  const list = kind === 'video' ? videoAttachments : chatAttachments;
+  const list = kind === 'video' ? videoAttachments : kind === 'image-edit' ? imageEditAttachments : chatAttachments;
   files.forEach((f) => {
     if (!String(f.type || '').toLowerCase().startsWith('image/')) return;
     const url = URL.createObjectURL(f);
@@ -258,10 +274,19 @@ function addAttachments(kind, files) {
   renderAttachments(kind);
 }
 
+function getAttachmentElements(kind) {
+  if (kind === 'video') {
+    return { list: videoAttachments, info: q('video-attach-info'), box: q('video-attach-preview') };
+  }
+  if (kind === 'image-edit') {
+    return { list: imageEditAttachments, info: q('image-edit-attach-info'), box: q('image-edit-attach-preview') };
+  }
+  return { list: chatAttachments, info: q('chat-attach-info'), box: q('chat-attach-preview') };
+}
+
 function renderAttachments(kind) {
-  const list = kind === 'video' ? videoAttachments : chatAttachments;
-  const info = kind === 'video' ? q('video-attach-info') : q('chat-attach-info');
-  const box = kind === 'video' ? q('video-attach-preview') : q('chat-attach-preview');
+  const { list, info, box } = getAttachmentElements(kind);
+  if (!info || !box) return;
   info.textContent = list.length ? `已选择 ${list.length} 张图片` : '';
   box.innerHTML = '';
   if (!list.length) {
@@ -272,7 +297,7 @@ function renderAttachments(kind) {
   list.forEach((it, idx) => {
     const div = document.createElement('div');
     div.className = 'attach-item';
-    div.innerHTML = `<img src="${it.previewUrl}" alt="img"><button title="绉婚櫎">脳</button>`;
+    div.innerHTML = `<img src="${it.previewUrl}" alt="img"><button title="移除">×</button>`;
     div.querySelector('button').addEventListener('click', () => {
       try { URL.revokeObjectURL(it.previewUrl); } catch (e) { }
       list.splice(idx, 1);
@@ -733,6 +758,8 @@ async function refreshModels() {
   } catch (e) {
     showToast('加载模型失败: ' + (e?.message || e), 'error');
   }
+
+  updateImageEditUploadVisibility();
 }
 
 function saveApiKey() {
@@ -758,13 +785,14 @@ function clearApiKey() {
 function switchTab(tab) {
   if (currentTab === 'image' && tab !== 'image') {
     stopImageContinuous();
+    clearImageEditAttachments();
   }
   currentTab = tab;
   ['chat', 'image', 'video'].forEach((t) => {
     q(`tab-${t}`).classList.toggle('active', t === tab);
     q(`panel-${t}`).classList.toggle('hidden', t !== tab);
   });
-  refreshModels();
+  refreshModels().then(() => updateImageEditUploadVisibility());
   if (tab === 'image') refreshImageGenerationMethod();
 }
 
@@ -774,6 +802,34 @@ function pickChatImage() {
 
 function pickVideoImage() {
   q('video-file').click();
+}
+
+function pickImageEditFile() {
+  const el = q('image-edit-file');
+  if (el) el.click();
+}
+
+function isImageEditModel(modelId) {
+  return String(modelId || '').trim() === 'grok-imagine-1.0-edit';
+}
+
+function updateImageEditUploadVisibility() {
+  const model = String(q('model-select')?.value || '').trim();
+  const wrap = q('image-edit-upload-wrap');
+  if (!wrap) return;
+  const isEdit = isImageEditModel(model);
+  wrap.classList.toggle('hidden', !isEdit || currentTab !== 'image');
+  if (!isEdit) {
+    clearImageEditAttachments();
+  }
+}
+
+function clearImageEditAttachments() {
+  imageEditAttachments.forEach((a) => {
+    try { URL.revokeObjectURL(a.previewUrl); } catch (e) { }
+  });
+  imageEditAttachments = [];
+  renderAttachments('image-edit');
 }
 
 async function uploadImages(files) {
@@ -1027,6 +1083,14 @@ async function generateImage() {
   const headers = { ...buildApiHeaders(), 'Content-Type': 'application/json' };
   if (!headers.Authorization) return showToast('请先填写 API Key', 'warning');
 
+  const model = String(q('model-select').value || 'grok-imagine-1.0').trim();
+
+  // Route to image edit flow when edit model is selected
+  if (isImageEditModel(model)) {
+    await generateImageEdit(prompt, model);
+    return;
+  }
+
   if (imageGenerationExperimental && getImageRunMode() === 'continuous') {
     startImageContinuous();
     return;
@@ -1034,7 +1098,6 @@ async function generateImage() {
 
   stopImageContinuous();
 
-  const model = String(q('model-select').value || 'grok-imagine-1.0').trim();
   const n = Math.max(1, Math.min(10, Math.floor(Number(q('image-n').value || 1) || 1)));
   const stream = Boolean(q('stream-toggle').checked);
   const useStream = stream && n <= 2;
@@ -1082,6 +1145,121 @@ async function generateImage() {
     if (!rendered) throw new Error('Image data is empty or unsupported');
   } catch (e) {
     showToast('生图失败: ' + (e?.message || e), 'error');
+  }
+}
+
+async function generateImageEdit(prompt, model) {
+  const apiHeaders = buildApiHeaders();
+  if (!apiHeaders.Authorization) return showToast('请先填写 API Key', 'warning');
+
+  if (!imageEditAttachments.length) {
+    return showToast('请上传参考图片', 'warning');
+  }
+
+  const n = Math.max(1, Math.min(10, Math.floor(Number(q('image-n').value || 1) || 1)));
+  const stream = Boolean(q('stream-toggle').checked);
+
+  q('image-results').innerHTML = '';
+  showToast('编辑图片中...', 'info');
+
+  const fd = new FormData();
+  fd.append('prompt', prompt);
+  fd.append('model', model);
+  fd.append('n', String(n));
+  fd.append('stream', String(stream));
+  imageEditAttachments.forEach((att) => {
+    fd.append('image', att.file);
+  });
+
+  try {
+    if (stream) {
+      const res = await fetch('/v1/images/edits', {
+        method: 'POST',
+        headers: apiHeaders,
+        body: fd,
+      });
+      if (!res.ok || !res.body) {
+        const t = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${t.slice(0, 200)}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      const cardMap = new Map();
+      const completedSet = new Set();
+      let rendered = 0;
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const blocks = buf.split('\n\n');
+        buf = blocks.pop() || '';
+        for (const block of blocks) {
+          const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
+          if (!lines.length) continue;
+          let event = '';
+          const dataLines = [];
+          lines.forEach((line) => {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+          });
+          const payload = dataLines.join('\n').trim();
+          if (!payload) continue;
+          if (payload === '[DONE]') {
+            if (!rendered) throw new Error('No image generated');
+            return;
+          }
+          let obj = null;
+          try { obj = JSON.parse(payload); } catch (e) { continue; }
+          const type = String(obj?.type || event || '').trim();
+          const idx = Math.max(0, Number(obj?.index) || 0);
+          const card = ensureImageCard(cardMap, idx);
+          if (type === 'image_generation.partial_image') {
+            updateImageCardProgress(card, obj?.progress ?? 0);
+            continue;
+          }
+          if (type === 'image_generation.completed') {
+            const src = pickImageSrc(obj);
+            const failed = !src;
+            updateImageCardCompleted(card, src, failed);
+            if (!failed && !completedSet.has(idx)) {
+              completedSet.add(idx);
+              rendered += 1;
+            }
+          }
+        }
+      }
+      if (!rendered) throw new Error('No image generated');
+    } else {
+      const res = await fetch('/v1/images/edits', {
+        method: 'POST',
+        headers: apiHeaders,
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error?.message || data?.detail || `HTTP ${res.status}`);
+
+      const items = Array.isArray(data?.data) ? data.data : [];
+      if (!items.length) throw new Error('No image generated');
+
+      let rendered = 0;
+      items.forEach((it, idx) => {
+        const src = pickImageSrc(it);
+        const card = createImageCard(idx);
+        q('image-results').appendChild(card);
+        if (!src) {
+          updateImageCardCompleted(card, '', true);
+          return;
+        }
+        rendered += 1;
+        updateImageCardCompleted(card, src, false);
+      });
+      if (!rendered) throw new Error('Image data is empty or unsupported');
+    }
+  } catch (e) {
+    showToast('图片编辑失败: ' + (e?.message || e), 'error');
   }
 }
 

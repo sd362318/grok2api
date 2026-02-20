@@ -354,7 +354,8 @@
   }
 
   #chat-attach-info,
-  #video-attach-info {
+  #video-attach-info,
+  #image-edit-attach-info {
     width: 100%;
   }
 
