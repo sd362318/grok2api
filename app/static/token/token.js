@@ -1223,7 +1223,30 @@ async function batchEnableNsfw(tokenList) {
   const CHUNK = 20;
   let success = 0;
   let failed = 0;
+  const total = tokenList.length;
+
+  // Show progress in batch-progress bar
+  const container = document.getElementById('batch-progress');
+  const textEl = document.getElementById('batch-progress-text');
+  const stopBtn = document.getElementById('btn-stop-action');
+  const pauseBtn = document.getElementById('btn-pause-action');
+  if (container) container.classList.remove('hidden');
+  if (pauseBtn) pauseBtn.classList.add('hidden');
+  if (stopBtn) stopBtn.classList.remove('hidden');
+
+  let stopped = false;
+  const onStop = () => { stopped = true; };
+  if (stopBtn) stopBtn.addEventListener('click', onStop, { once: true });
+
+  const updateProgress = () => {
+    const processed = success + failed;
+    const pct = total ? Math.floor((processed / total) * 100) : 0;
+    if (textEl) textEl.textContent = `NSFW ${pct}% (${processed}/${total}) 成功:${success} 失败:${failed}`;
+  };
+  updateProgress();
+
   for (let i = 0; i < tokenList.length; i += CHUNK) {
+    if (stopped) break;
     const chunk = tokenList.slice(i, i + CHUNK);
     try {
       const res = await fetch('/api/tokens/enable-nsfw', {
@@ -1246,11 +1269,24 @@ async function batchEnableNsfw(tokenList) {
     } catch (e) {
       failed += chunk.length;
     }
+    updateProgress();
   }
-  showToast(
-    `NSFW 开启完成：成功 ${success}，失败 ${failed}`,
-    failed > 0 ? 'info' : 'success'
-  );
+
+  // Hide progress bar
+  if (container) container.classList.add('hidden');
+  if (stopBtn) stopBtn.removeEventListener('click', onStop);
+
+  if (stopped) {
+    showToast(
+      `NSFW 已终止：成功 ${success}，失败 ${failed}，未处理 ${total - success - failed}`,
+      'info'
+    );
+  } else {
+    showToast(
+      `NSFW 开启完成：成功 ${success}，失败 ${failed}`,
+      failed > 0 ? 'info' : 'success'
+    );
+  }
 }
 
 async function batchNsfwSelected() {
