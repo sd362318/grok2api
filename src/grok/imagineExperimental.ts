@@ -140,7 +140,7 @@ function buildImagineWsPayload(prompt: string, requestId: string, aspectRatio: s
         {
           requestId,
           text: prompt,
-          type: "input_scroll",
+          type: "input_text",
           properties: {
             section_count: 0,
             is_kids_mode: false,

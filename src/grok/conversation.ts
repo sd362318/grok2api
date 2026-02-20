@@ -92,7 +92,13 @@ export function buildConversationPayload(args: {
     const aspectRatio = (args.videoConfig?.aspect_ratio ?? "").trim() || "3:2";
     const videoLengthRaw = Number(args.videoConfig?.video_length ?? 6);
     const videoLength = Number.isFinite(videoLengthRaw) ? Math.max(1, Math.floor(videoLengthRaw)) : 6;
-    const resolution = (args.videoConfig?.resolution ?? "SD") === "HD" ? "HD" : "SD";
+    const resolution = (() => {
+      const raw = (args.videoConfig?.resolution ?? "").trim().toUpperCase();
+      if (raw === "HD" || raw === "720P") return "720p";
+      if (raw === "SD" || raw === "480P") return "480p";
+      if (raw) return raw.toLowerCase();
+      return "480p";
+    })();
     const preset = (args.videoConfig?.preset ?? "normal").trim();
 
     let modeFlag = "--mode=custom";
@@ -119,7 +125,7 @@ export function buildConversationPayload(args: {
                 parentPostId: postId,
                 aspectRatio,
                 videoLength,
-                videoResolution: resolution,
+                resolutionName: resolution,
               },
             },
           },
