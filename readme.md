@@ -418,4 +418,4 @@ curl http://localhost:8000/v1/images/edits \
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=TQZHR/grok2api&type=Timeline)](https://star-history.com/#TQZHR/grok2api&Timeline)
+[![Star History Chart](https://api.star-history.com/svg?repos=AGI-is-going-to-arrive/grok2api&type=timeline&legend=top-left)](https://www.star-history.com/#AGI-is-going-to-arrive/grok2api&type=timeline&legend=top-left)
